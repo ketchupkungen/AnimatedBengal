@@ -6,6 +6,9 @@ It renders a layered Bengal cat illustration where different image layers are an
 
 The animation is lightweight, requires **no external libraries**, and runs entirely in the browser.
 
+Sample:
+https://ketchupkungen.github.io/AnimatedBengal/
+
 ---
 
 # Features
