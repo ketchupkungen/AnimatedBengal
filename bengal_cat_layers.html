@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bengal Cat Layer Animation</title>
+
+  <style>
+    /* =========================================================
+       ROOT VARIABLES
+       ---------------------------------------------------------
+       Central place for scene sizing and page background color.
+       ========================================================= */
+    :root {
+      --scene-max-width: min(92vw, 720px);
+      --bg: #dcdcdc;
+    }
+
+    /* =========================================================
+       GLOBAL RESET / LAYOUT SAFETY
+       ---------------------------------------------------------
+       Using border-box everywhere makes sizing easier to reason
+       about and avoids padding/width surprises.
+       ========================================================= */
+    * {
+      box-sizing: border-box;
+    }
+
+    /* =========================================================
+       PAGE LAYOUT
+       ---------------------------------------------------------
+       Center the cat on screen and keep the viewport clean.
+       overflow: hidden prevents scrollbars caused by transforms.
+       ========================================================= */
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+    }
+
+    /* =========================================================
+       SCENE CONTAINER
+       ---------------------------------------------------------
+       Keeps the cat responsive while preserving the original
+       source image aspect ratio.
+       ========================================================= */
+    .scene {
+      width: var(--scene-max-width);
+      aspect-ratio: 1024 / 1536;
+      display: block;
+      filter: drop-shadow(0 10px 30px rgba(0, 0, 0, 0.10));
+      user-select: none;
+      -webkit-user-drag: none;
+      touch-action: none;
+    }
+
+    /* =========================================================
+       SVG
+       ---------------------------------------------------------
+       The SVG fills the scene. overflow: visible helps prevent
+       transforms from clipping unexpectedly.
+       ========================================================= */
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      overflow: visible;
+    }
+
+    /* =========================================================
+       IMAGE LAYERS
+       ---------------------------------------------------------
+       Each PNG layer is rendered as an SVG image.
+       pointer-events: none ensures the mouse interacts with the
+       page/scene, not individual image layers.
+       ========================================================= */
+    image {
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* =========================================================
+       BLINK OVERLAY
+       ---------------------------------------------------------
+       This is the "closed eyes" layer. It starts invisible and
+       fades in/out during blink or stays fully visible while the
+       cat is "sleeping" from user inactivity.
+       ========================================================= */
+    #blinkOverlay {
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="scene">
+    <svg viewBox="0 0 1024 1536" aria-label="Animated bengal cat">
+      <!-- =====================================================
+           LAYER ORDER (BOTTOM TO TOP)
+           -----------------------------------------------------
+           7. background
+           6. body_breathing
+           5. body_static
+           4. headpart
+           3. nose
+           2. open eyes
+           1. moving eye layers
+           1. blink overlay on top
+           ===================================================== -->
+
+      <!-- 7. Background -->
+      <image href="bengal_cat_background.png" x="0" y="0" width="1024" height="1536" />
+
+      <!-- 6. Breathing body layer -->
+      <g id="bodyBreathingLayer">
+        <image href="bengal_cat_body_breathing.png" x="0" y="0" width="1024" height="1536" />
+      </g>
+
+      <!-- 5. Static body base -->
+      <image href="bengal_cat_body_static.png" x="0" y="0" width="1024" height="1536" />
+
+      <!-- 4. Head group:
+           headpart + open eyes + moving eyes + nose + blink overlay
+           all move vertically together with breathing and also
+           lean subtly based on cursor position -->
+      <g id="headGroup">
+        <image href="bengal_cat_headpart.png" x="0" y="0" width="1024" height="1536" />
+
+        <!-- 3. Nose layer -->
+        <g id="noseLayer">
+          <image href="bengal_cat_nose.png" x="0" y="0" width="1024" height="1536" />
+        </g>
+
+        <!-- 2. Open-eye background layer -->
+        <g id="openEyesLayer">
+          <image href="bengal_cat_openeyes.png" x="0" y="0" width="1024" height="1536" />
+        </g>
+
+        <!-- 1. Left moving eye layer -->
+        <g id="leftEyeLayer">
+          <image href="bengal_cat_lefteye.png" x="0" y="0" width="1024" height="1536" />
+        </g>
+
+        <!-- 1. Right moving eye layer -->
+        <g id="rightEyeLayer">
+          <image href="bengal_cat_righteye.png" x="0" y="0" width="1024" height="1536" />
+        </g>
+
+        <!-- Closed-eyes overlay used both for:
+             - normal blink animation
+             - long closed-eye idle state after inactivity -->
+        <g id="blinkOverlay">
+          <image href="bengal_cat_closedeyes.png" x="0" y="0" width="1024" height="1536" />
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <script>
+    /* =========================================================
+       ELEMENT REFERENCES
+       ---------------------------------------------------------
+       Cache DOM references once so we do not repeatedly query
+       them every animation frame.
+       ========================================================= */
+    const svg = document.querySelector('svg');
+    const headGroup = document.getElementById('headGroup');
+    const bodyBreathingLayer = document.getElementById('bodyBreathingLayer');
+    const noseLayer = document.getElementById('noseLayer');
+    const leftEyeLayer = document.getElementById('leftEyeLayer');
+    const rightEyeLayer = document.getElementById('rightEyeLayer');
+    const blinkOverlay = document.getElementById('blinkOverlay');
+
+    /* =========================================================
+       CONFIGURATION
+       ---------------------------------------------------------
+       Tweak animation values here.
+       ========================================================= */
+    const config = {
+      /* Maximum number of pixels each eye may move toward cursor */
+      maxEyeOffset: 6,
+
+      /* Vertical breathing motion of the whole head group */
+      headBobY: 3,
+
+      /* Breathing pulse strength for the nose */
+      noseScale: 0.05,
+
+      /* Breathing pulse strength for the body breathing layer */
+      bodyScale: 0.03,
+
+      /* Full inhale/exhale loop duration */
+      breathDurationMs: 5200,
+
+      /* Regular blink timing while active */
+      blinkEveryMs: 10000,
+
+      /* Total blink duration */
+      blinkDurationMs: 1000,
+
+      /* Eye smoothing factor; higher = snappier */
+      eyeEase: 0.12,
+
+      /* Cursor distance at which eye travel reaches maxEyeOffset */
+      lookRadius: 180,
+
+      /* If no mouse movement happens for this long, cat "rests" */
+      idleCloseDelayMs: 30000,
+
+      /* ------------------------------------------------------
+         Head follow / lean settings
+         ------------------------------------------------------
+         Kept intentionally subtle so the head feels alive
+         without looking detached or rubbery.
+         ------------------------------------------------------ */
+
+      /* Maximum head rotation in degrees */
+      maxHeadRotateDeg: 0.7,
+
+      /* Maximum small horizontal head shift in pixels */
+      maxHeadShiftX: 2,
+
+      /* How quickly head lean catches up to cursor */
+      headFollowEase: 0.07,
+
+      /* Horizontal / vertical cursor distance used for max lean */
+      headLookRadius: 320,
+      headLookRadiusY: 320
+    };
+
+    /* =========================================================
+       ANCHOR POINTS
+       ---------------------------------------------------------
+       These represent the transform origins / logical anchor
+       positions inside the original full-size source coordinate
+       system.
+       ========================================================= */
+    const anchors = {
+      leftEye: { x: 458, y: 410 },
+      rightEye: { x: 578.5, y: 410 },
+      nose: { x: 500, y: 500 },
+      bodyBreathing: { x: 380, y: 900 },
+
+      /* Approximate head pivot / neck connection point */
+      headPivot: { x: 512, y: 560 }
+    };
+
+    /* =========================================================
+       POINTER STATE
+       ---------------------------------------------------------
+       pointer = latest mouse position mapped into SVG coords
+       lastPointerMoveTime = timestamp of most recent movement
+       ========================================================= */
+    let pointer = { x: 512, y: 768 };
+    let lastPointerMoveTime = performance.now();
+
+    /* =========================================================
+       EYE STATE
+       ---------------------------------------------------------
+       current = what is actually rendered now
+       target  = where the eye wants to move toward
+       This lets us smoothly interpolate toward the target.
+       ========================================================= */
+    let eyeState = {
+      currentLeft: { x: 0, y: 0 },
+      currentRight: { x: 0, y: 0 },
+      targetLeft: { x: 0, y: 0 },
+      targetRight: { x: 0, y: 0 }
+    };
+
+    /* =========================================================
+       HEAD FOLLOW STATE
+       ---------------------------------------------------------
+       The head lean also uses interpolation so it glides toward
+       the cursor direction rather than snapping each frame.
+       ========================================================= */
+    let headState = {
+      currentShiftX: 0,
+      currentRotateDeg: 0,
+      targetShiftX: 0,
+      targetRotateDeg: 0
+    };
+
+    /* =========================================================
+       POINTER HANDLING
+       ---------------------------------------------------------
+       Converts screen coordinates to local SVG coordinates.
+       This is important because the SVG is responsive and may be
+       scaled relative to the viewport.
+       ========================================================= */
+    function setPointerFromEvent(event) {
+      const pt = svg.createSVGPoint();
+      pt.x = event.clientX;
+      pt.y = event.clientY;
+
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+
+      const local = pt.matrixTransform(ctm.inverse());
+
+      pointer.x = local.x;
+      pointer.y = local.y;
+
+      /* Record activity time so we know the user is active */
+      lastPointerMoveTime = performance.now();
+    }
+
+    /* Listen globally so the cat wakes as soon as the user moves */
+    window.addEventListener('pointermove', setPointerFromEvent, { passive: true });
+
+    /* =========================================================
+       EYE TARGET CALCULATION
+       ---------------------------------------------------------
+       Computes how far an eye should move toward the cursor.
+       The movement is clamped so the eye never moves farther
+       than maxEyeOffset.
+       ========================================================= */
+    function computeEyeTarget(anchor) {
+      let dx = pointer.x - anchor.x;
+      let dy = pointer.y - anchor.y;
+
+      const dist = Math.hypot(dx, dy) || 1;
+
+      /* Normalize influence so nearby cursor gives smaller motion
+         and far-away cursor gives full allowed motion */
+      const normalized = Math.min(1, dist / config.lookRadius);
+
+      /* Final allowed eye travel for current cursor distance */
+      const allowed = config.maxEyeOffset * normalized;
+
+      /* Scale vector down so it never exceeds allowed travel */
+      const scale = Math.min(1, allowed / dist);
+
+      return {
+        x: dx * scale,
+        y: dy * scale
+      };
+    }
+
+    /* =========================================================
+       HEAD TARGET CALCULATION
+       ---------------------------------------------------------
+       Diagonal tilt logic requested:
+       - low left  => down left
+       - high left => down right
+       - low right => down right
+       - high right => down left
+
+       This is achieved by combining normalized X and Y.
+       ========================================================= */
+    function computeHeadTarget() {
+      const dx = pointer.x - anchors.headPivot.x;
+      const dy = pointer.y - anchors.headPivot.y;
+
+      /* Normalize cursor position around the head pivot.
+         X: left = negative, right = positive
+         Y: up = negative, down = positive */
+      const normalizedX = Math.max(
+        -1,
+        Math.min(1, dx / config.headLookRadius)
+      );
+
+      const normalizedY = Math.max(
+        -1,
+        Math.min(1, dy / config.headLookRadiusY)
+      );
+
+      /* Small horizontal drift remains based on X only */
+      const shiftX = normalizedX * config.maxHeadShiftX;
+
+      /* Diagonal tilt mapping */
+      const rotateDeg = normalizedX * normalizedY * config.maxHeadRotateDeg;
+
+      return {
+        shiftX,
+        rotateDeg
+      };
+    }
+
+    /* =========================================================
+       TRANSFORM HELPER
+       ---------------------------------------------------------
+       SVG groups use transform attributes, not CSS transforms, to
+       keep all movement inside the SVG coordinate system.
+       ========================================================= */
+    function setTransform(el, transform) {
+      el.setAttribute('transform', transform);
+    }
+
+    /* =========================================================
+       IDLE / SLEEP CHECK
+       ---------------------------------------------------------
+       Returns true if the user has been inactive long enough that
+       the cat should keep its eyes closed.
+       ========================================================= */
+    function isIdleSleeping(nowMs) {
+      return (nowMs - lastPointerMoveTime) >= config.idleCloseDelayMs;
+    }
+
+    /* =========================================================
+       BLINK LOGIC
+       ---------------------------------------------------------
+       There are now two eye-closure modes:
+       1. Normal blinking while active
+       2. Fully closed eyes during inactivity sleep state
+       ========================================================= */
+    function updateBlink(now) {
+      const sleeping = isIdleSleeping(now);
+
+      if (sleeping) {
+        blinkOverlay.style.opacity = '1';
+        return;
+      }
+
+      const cycle = now % config.blinkEveryMs;
+      const blinkStart = config.blinkEveryMs - config.blinkDurationMs;
+
+      let opacity = 0;
+
+      if (cycle >= blinkStart) {
+        const t = (cycle - blinkStart) / config.blinkDurationMs;
+
+        if (t < 0.08) {
+          opacity = t / 0.08;
+        } else if (t < 0.38) {
+          opacity = 1;
+        } else if (t < 0.62) {
+          opacity = 1 - ((t - 0.38) / 0.24);
+        } else {
+          opacity = 0;
+        }
+      }
+
+      blinkOverlay.style.opacity = opacity.toFixed(3);
+    }
+
+    /* =========================================================
+       MAIN ANIMATION LOOP
+       ---------------------------------------------------------
+       requestAnimationFrame gives a smooth browser-synced loop.
+
+       Every frame we:
+       1. compute breathing motion
+       2. compute eye targets
+       3. compute head lean targets
+       4. ease eyes and head toward targets
+       5. apply SVG transforms
+       6. update blink / idle-sleep state
+       ========================================================= */
+    function animate(now) {
+      /* -------------------------------------------------------
+         BREATHING CURVE
+         ------------------------------------------------------- */
+      const breathT = now / config.breathDurationMs;
+      const breath = (Math.sin(breathT * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+      const smoothBreath = 0.5 - 0.5 * Math.cos(breath * Math.PI);
+
+      /* -------------------------------------------------------
+         HEAD VERTICAL MOTION
+         ------------------------------------------------------- */
+      const headY = (smoothBreath * 2 - 1) * config.headBobY;
+
+      /* -------------------------------------------------------
+         BREATHING SCALES
+         ------------------------------------------------------- */
+      const noseScale = 1 + smoothBreath * config.noseScale;
+      const bodyScale = 1 + smoothBreath * config.bodyScale;
+
+      /* -------------------------------------------------------
+         EYE TARGETS
+         ------------------------------------------------------- */
+      eyeState.targetLeft = computeEyeTarget(anchors.leftEye);
+      eyeState.targetRight = computeEyeTarget(anchors.rightEye);
+
+      /* -------------------------------------------------------
+         HEAD LEAN TARGETS
+         ------------------------------------------------------- */
+      const headTarget = computeHeadTarget();
+      headState.targetShiftX = headTarget.shiftX;
+      headState.targetRotateDeg = headTarget.rotateDeg;
+
+      /* -------------------------------------------------------
+         EYE SMOOTHING
+         ------------------------------------------------------- */
+      eyeState.currentLeft.x += (eyeState.targetLeft.x - eyeState.currentLeft.x) * config.eyeEase;
+      eyeState.currentLeft.y += (eyeState.targetLeft.y - eyeState.currentLeft.y) * config.eyeEase;
+
+      eyeState.currentRight.x += (eyeState.targetRight.x - eyeState.currentRight.x) * config.eyeEase;
+      eyeState.currentRight.y += (eyeState.targetRight.y - eyeState.currentRight.y) * config.eyeEase;
+
+      /* -------------------------------------------------------
+         HEAD SMOOTHING
+         ------------------------------------------------------- */
+      headState.currentShiftX += (headState.targetShiftX - headState.currentShiftX) * config.headFollowEase;
+      headState.currentRotateDeg += (headState.targetRotateDeg - headState.currentRotateDeg) * config.headFollowEase;
+
+      /* -------------------------------------------------------
+         APPLY TRANSFORMS
+         -------------------------------------------------------
+         Head group:
+         1. small horizontal drift
+         2. vertical breathing bob
+         3. rotation around head pivot
+         ------------------------------------------------------- */
+      setTransform(
+        headGroup,
+        `translate(${headState.currentShiftX.toFixed(3)} ${headY.toFixed(3)}) rotate(${headState.currentRotateDeg.toFixed(3)} ${anchors.headPivot.x} ${anchors.headPivot.y})`
+      );
+
+      /* Individual eye tracking offsets */
+      setTransform(
+        leftEyeLayer,
+        `translate(${eyeState.currentLeft.x.toFixed(3)} ${eyeState.currentLeft.y.toFixed(3)})`
+      );
+
+      setTransform(
+        rightEyeLayer,
+        `translate(${eyeState.currentRight.x.toFixed(3)} ${eyeState.currentRight.y.toFixed(3)})`
+      );
+
+      /* Nose breathing scale around nose anchor */
+      setTransform(
+        noseLayer,
+        `translate(${anchors.nose.x} ${anchors.nose.y}) scale(${noseScale.toFixed(4)}) translate(${-anchors.nose.x} ${-anchors.nose.y})`
+      );
+
+      /* Body breathing scale around body anchor */
+      setTransform(
+        bodyBreathingLayer,
+        `translate(${anchors.bodyBreathing.x} ${anchors.bodyBreathing.y}) scale(${bodyScale.toFixed(4)}) translate(${-anchors.bodyBreathing.x} ${-anchors.bodyBreathing.y})`
+      );
+
+      /* Blink / sleep overlay */
+      updateBlink(now);
+
+      requestAnimationFrame(animate);
+    }
+
+    /* Start the animation loop */
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
